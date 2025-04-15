@@ -1,117 +1,94 @@
-Plexamp Headless + AirPlay (RAOP) on Raspberry Pi
-=================================================
+# AirPlay Audio Forwarding on Raspberry Pi (RAOP via PipeWire)
 
-Minimal setup guide for running Plexamp in headless mode and routing all system audio to an AirPlay (RAOP v1) speaker.
+## Goal
+Forward all system audio **from Raspberry Pi** to an **AirPlay-compatible speaker** (e.g., Edifier MS50A).
 
-* * *
+---
 
-📦 Required Packages
---------------------
+## Step 1: Install Required Packages
 
-Install PulseAudio with RAOP support and device discovery:
+```bash
+sudo apt update
+sudo apt install -y pipewire wireplumber libpipewire-0.3-modules pulseaudio-utils
+```
 
-`sudo apt update sudo apt install \   pulseaudio \   pulseaudio-utils \   pulseaudio-module-raop \   avahi-daemon`
+---
 
-* * *
+## Step 2: Set Up RAOP Module Loader in Script
 
-🛠 Optional: Disable PipeWire (if it interferes)
-------------------------------------------------
+Create `~/set-default-sink.sh`:
 
-`systemctl --user mask pipewire.service pipewire.socket wireplumber.service`
+```bash
+#!/bin/bash
 
-* * *
+TARGET="raop_sink.Cabinet-sound.local.192.168.1.194.7000"
 
-🔁 Enable user lingering (so services persist after reboot)
------------------------------------------------------------
+# Load RAOP module if not active
+if ! pactl list short modules | grep -q module-raop-discover; then
+    pactl load-module module-raop-discover
+fi
 
-`sudo loginctl enable-linger grakovne`
-
-* * *
-
-🚀 Plexamp Headless systemd user unit
--------------------------------------
-
-File: `~/.config/systemd/user/plexamp.service`
-
-    [Unit]
-    Description=Plexamp Headless
-    After=network-online.target
-    
-    [Service]
-    Type=simple
-    User=grakovne
-    Environment=NODE_ENV=production
-    Environment=XDG_RUNTIME_DIR=/run/user/1000
-    WorkingDirectory=/opt/plexamp
-    ExecStart=/usr/local/n/versions/node/20.19.0/bin/node js/index.js
-    Restart=always
-    
-    [Install]
-    WantedBy=default.target
-    
-
-* * *
-
-🔈 RAOP auto-setup script
--------------------------
-
-File: `~/set-default-raop.sh`
-
-    #!/bin/bash
-    
-    if ! pactl list short modules | grep -q module-raop-discover; then
-        pactl load-module module-raop-discover
-        echo "Loaded module-raop-discover"
+# Wait for sink to appear
+for i in {{1..30}}; do
+    if pactl list short sinks | grep -q "$TARGET"; then
+        pactl set-default-sink "$TARGET"
+        exit 0
     fi
-    
-    for i in {1..30}; do
-        SINK=$(pactl list short sinks | grep raop | awk '{print $2}' | head -n1)
-        if [[ -n "$SINK" ]]; then
-            pactl set-default-sink "$SINK"
-            echo "Default sink set to: $SINK"
-    
-            for j in {1..5}; do
-                INPUT_ID=$(pactl list short sink-inputs | grep "$SINK" | awk '{print $1}' | head -n1)
-                if [[ -n "$INPUT_ID" ]]; then
-                    pactl set-sink-input-volume "$INPUT_ID" 50%
-                    echo "Sink-input $INPUT_ID volume set to 50%"
-                    break
-                fi
-                sleep 1
-            done
-    
-            exit 0
-        fi
-        sleep 1
-    done
-    
-    echo "RAOP sink not found"
-    exit 1
-    
+    sleep 1
+done
 
-* * *
+echo "Sink $TARGET not found after waiting. Exiting."
+exit 1
+```
 
-🧩 systemd user unit for RAOP auto-setup
-----------------------------------------
+Make executable:
 
-File: `~/.config/systemd/user/set-raop-default.service`
+```bash
+chmod +x ~/set-default-sink.sh
+sudo loginctl enable-linger grakovne
+```
 
-    [Unit]
-    Description=Set default RAOP sink (AirPlay) if available
-    After=sound.target network-online.target
-    Requires=plexamp.service
-    
-    [Service]
-    Type=oneshot
-    ExecStart=/home/grakovne/set-default-raop.sh
-    
-    [Install]
-    WantedBy=default.target
-    
+---
 
-* * *
+## Step 3: Create systemd User Unit
 
-✅ Final steps
--------------
+Save as `~/.config/systemd/user/set-sink.service`:
 
-`systemctl --user daemon-reload systemctl --user enable plexamp.service systemctl --user enable set-raop-default.service systemctl --user start plexamp.service`
+```ini
+[Unit]
+Description=Set default sink to AirPlay
+After=pipewire.service
+
+[Service]
+ExecStart=/home/grakovne/set-default-sink.sh
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+---
+
+## Step 4: Enable the Unit
+
+```bash
+systemctl --user daemon-reexec
+systemctl --user daemon-reload
+systemctl --user enable --now set-sink.service
+```
+
+---
+
+## Optional Debugging
+
+Check default sink:
+
+```bash
+pactl info | grep "Default Sink"
+```
+
+List available sinks:
+
+```bash
+pactl list short sinks
+```
